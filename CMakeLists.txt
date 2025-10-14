@@ -12,7 +12,6 @@ pkg_check_modules(WLCLIENT REQUIRED wayland-client)
 pkg_check_modules(WLEGL REQUIRED wayland-egl)
 pkg_check_modules(EGL REQUIRED egl)
 pkg_check_modules(GL REQUIRED gl)
-pkg_check_modules(TVG REQUIRED thorvg)
 
 include_directories(
     include 
@@ -29,7 +28,6 @@ link_libraries(
     ${WLEGL_LIBRARIES}
     ${EGL_LIBRARIES}
     ${GL_LIBRARIES}
-    ${TVG_LIBRARIES}
 )
 
 file(GLOB_RECURSE SOURCES

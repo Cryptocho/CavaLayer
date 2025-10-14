@@ -3,14 +3,18 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <vector>
 #include <unistd.h>
-#define namespace ns
-#include "layer-shell-client-protocol.h"
-#undef namespace
+#include <signal.h>
 #include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/gl.h>
+
+#define namespace ns
+#include "layer-shell-client-protocol.h"
+#undef namespace
+#include "cava-input.hpp"
 
 // RAII包装
 struct WlDeleter {
@@ -22,6 +26,7 @@ struct WlDeleter {
     void operator()(zwlr_layer_shell_v1* ls) const { if (ls) zwlr_layer_shell_v1_destroy(ls); }
     void operator()(zwlr_layer_surface_v1* ls) const { if (ls) zwlr_layer_surface_v1_destroy(ls); }
     void operator()(wl_egl_window* w) const { if (w) wl_egl_window_destroy(w); }
+    void operator()(wl_seat* s) const { if (s) wl_seat_destroy(s); }
 };
 
 struct ClientState {
@@ -34,16 +39,72 @@ struct ClientState {
     std::unique_ptr<zwlr_layer_shell_v1, WlDeleter> layer_shell;
     std::unique_ptr<zwlr_layer_surface_v1, WlDeleter> layer_surface;
     std::unique_ptr<wl_egl_window, WlDeleter> egl_window;
+    std::unique_ptr<wl_seat, WlDeleter> seat;
+    wl_keyboard *keyboard = nullptr;
     // EGL 资源
     EGLDisplay egl_display = EGL_NO_DISPLAY;
     EGLContext egl_context = EGL_NO_CONTEXT;
     EGLSurface egl_surface = EGL_NO_SURFACE;
+    // Cava 资源
+    std::vector<float> cava_frame;
+    size_t cava_bars = 128;
+    const char *bit_format = "16bit";
+    size_t ring_capacity = 16; // 环形缓冲区容量
     // 状态管理
     uint32_t configure_serial = 0;
     bool configured = false;
     bool egl_initialized = false;
     int width = 0;
     int height = 0;
+    bool running = true;
+};
+
+static void keyboard_keymap(void *data, wl_keyboard *keyboard, uint32_t format, int fd, uint32_t size) {
+    // 忽略
+}
+
+static void keyboard_enter(void *data, wl_keyboard *keyboard, uint32_t serial, wl_surface *surface, wl_array *keys) {
+    // 光标进入
+}
+
+static void keyboard_leave(void *data, wl_keyboard *keyboard, uint32_t serial, wl_surface *surface) {
+    // 光标离开
+}
+
+static void keyboard_modifiers(void *data, wl_keyboard *keyboard, uint32_t serial, uint32_t mods_depressed,
+                               uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
+    // 忽略
+}
+
+static void keyboard_key(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+    ClientState *client = static_cast<ClientState *>(data);
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+        std::cout << "[Key] keycode " << key << " pressed" << std::endl;
+    }
+    if (key == 1) {
+        std::cout << "[Key] Esc pressed, exiting..." << std::endl;
+        client->running = false;
+    }
+}
+
+static const wl_keyboard_listener keyboard_listener = {
+    keyboard_keymap,
+    keyboard_enter,
+    keyboard_leave,
+    keyboard_key,
+    keyboard_modifiers
+};
+
+static void seat_capabilities(void *data, wl_seat *seat, uint32_t caps) {
+    ClientState* client = static_cast<ClientState*>(data);
+    if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+        client->keyboard = wl_seat_get_keyboard(seat);
+        wl_keyboard_add_listener(client->keyboard, &keyboard_listener, client);
+    }
+}
+
+static const wl_seat_listener seat_listener = {
+    seat_capabilities
 };
 
 static void registry_global(void *data, struct wl_registry *registry, uint32_t id, const char *interface, uint32_t version) {
@@ -66,6 +127,13 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t i
             wl_registry_bind(registry, id, &zwlr_layer_shell_v1_interface, 1)
         ));
         std::cout << "[Wayland] Bound zwlr_layer_shell_v1" << std::endl;
+    }
+    else if (strcmp(interface, wl_seat_interface.name) == 0) {
+        state->seat.reset(static_cast<wl_seat*>(
+            wl_registry_bind(registry, id, &wl_seat_interface, 1)
+        ));
+        wl_seat_add_listener(state->seat.get(), &seat_listener, state);
+        std::cout << "[Wayland] Bound wl_seat" << std::endl;
     }
 }
 
@@ -156,10 +224,7 @@ bool init_egl(ClientState *state) {
     }
     std::cout << "[EGL] Created EGL surface" << std::endl;
 
-    EGLint context_attribs[] = {
-        EGL_CONTEXT_CLIENT_VERSION, 2,
-        EGL_NONE
-    };
+    EGLint context_attribs[] = { EGL_NONE };
     state->egl_context = eglCreateContext(state->egl_display, config, EGL_NO_CONTEXT, context_attribs);
     if (state->egl_context == EGL_NO_CONTEXT) {
         std::cerr << "Failed to create EGL context: " << eglGetError() << std::endl;
@@ -194,12 +259,21 @@ void draw_frame(ClientState *state) {
         return;
     }
 
-    eglMakeCurrent(state->egl_display, state->egl_surface, state->egl_surface, state->egl_context);
     glViewport(0, 0, state->width, state->height);
 
     // 清空屏幕
     glClearColor(1.0f, 0.0f, 0.0f, 0.2f);
     glClear(GL_COLOR_BUFFER_BIT);
+
+    int ret = cava_reader_try_pop(state->cava_frame.data(), state->cava_frame.size());
+    // if (ret > 0) {
+    //     std::cout << "[CAVA] 模拟绘制: [" << state->cava_frame[0] << "]" << std::endl;
+    // } else if (ret == 0) {
+    //     std::cout << "[CAVA] 无新数据" << std::endl;
+    // } else {
+    //     std::cerr << "[CAVA] 读取错误: " << ret << std::endl;
+    // }
+    
 
     // 交换缓冲区
     eglSwapBuffers(state->egl_display, state->egl_surface);
@@ -292,16 +366,26 @@ int main() {
         return 1;
     }
 
+    state.cava_frame.resize(state.cava_bars);
+    if (cava_reader_start(state.bit_format, state.cava_bars, state.ring_capacity) != CAVA_OK) {
+        std::cerr << "无法启动 cava_reader (可能 cava 未安装或 PATH 未设置)" << std::endl;
+        return 1;
+    }
+    std::cout << "[CAVA] Reader started with " << state.cava_bars << " bars" << std::endl;
+
     // 主渲染循环
     std::cout << "[Layer-Shell] 客户端运行中 (按 Ctrl+C 退出)" << std::endl;
-    while (true) {
+    while (state.running) {
         wl_display_dispatch_pending(state.display.get());
         wl_display_flush(state.display.get());
         draw_frame(&state);
         usleep(16000); // 60 FPS
     }
 
-    // 清理 EGL 资源
+    // 清理资源
     cleanup_egl(&state);
+    cava_reader_stop();
+    std::cout << "[CAVA] Reader stopped" << std::endl;
+
     return 0;
 }
