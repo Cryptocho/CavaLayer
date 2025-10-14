@@ -1,11 +1,10 @@
-#define _POSIX_C_SOURCE 200112L
-#include <wayland-client.h>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <vector>
 #include <unistd.h>
-#include <signal.h>
+#include <wayland-client.h>
 #include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -260,20 +259,30 @@ void draw_frame(ClientState *state) {
     }
 
     glViewport(0, 0, state->width, state->height);
-
-    // 清空屏幕
-    glClearColor(1.0f, 0.0f, 0.0f, 0.2f);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     int ret = cava_reader_try_pop(state->cava_frame.data(), state->cava_frame.size());
-    // if (ret > 0) {
-    //     std::cout << "[CAVA] 模拟绘制: [" << state->cava_frame[0] << "]" << std::endl;
-    // } else if (ret == 0) {
-    //     std::cout << "[CAVA] 无新数据" << std::endl;
-    // } else {
-    //     std::cerr << "[CAVA] 读取错误: " << ret << std::endl;
-    // }
-    
+    if (ret == 1) {
+        size_t n = state->cava_frame.size();
+        if (n < 2) return;
+        std::vector<GLfloat> vertices;
+        vertices.reserve(n * 2);
+        for (size_t i = 0; i < n; i++) {
+            float x = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
+            float y = state->cava_frame[i] * 2.0f - 1.0f;
+            vertices.push_back(x);
+            vertices.push_back(y);
+        }
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 0, vertices.data());
+        glColor4f(0.0f, 0.4f, 1.0f, 1.0f);
+        glLineWidth(2.0f);
+        glDrawArrays(GL_LINE_STRIP, 0, n);
+        glDisableClientState(GL_VERTEX_ARRAY);
+    }
+
+    glFinish();
 
     // 交换缓冲区
     eglSwapBuffers(state->egl_display, state->egl_surface);
@@ -368,13 +377,13 @@ int main() {
 
     state.cava_frame.resize(state.cava_bars);
     if (cava_reader_start(state.bit_format, state.cava_bars, state.ring_capacity) != CAVA_OK) {
-        std::cerr << "无法启动 cava_reader (可能 cava 未安装或 PATH 未设置)" << std::endl;
+        std::cerr << "无法启动 cava_reader" << std::endl;
         return 1;
     }
     std::cout << "[CAVA] Reader started with " << state.cava_bars << " bars" << std::endl;
 
     // 主渲染循环
-    std::cout << "[Layer-Shell] 客户端运行中 (按 Ctrl+C 退出)" << std::endl;
+    std::cout << "[Layer-Shell] 客户端运行中" << std::endl;
     while (state.running) {
         wl_display_dispatch_pending(state.display.get());
         wl_display_flush(state.display.get());
