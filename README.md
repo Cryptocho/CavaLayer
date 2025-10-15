@@ -48,4 +48,4 @@ Currently configuration is hardcoded in the source. Future versions will support
 
 License
 
-MIT License (see LICENSE file)
+MIT License
