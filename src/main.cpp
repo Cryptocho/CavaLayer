@@ -46,7 +46,7 @@ struct ClientState {
     EGLSurface egl_surface = EGL_NO_SURFACE;
     // Cava 资源
     std::vector<float> cava_frame;
-    size_t cava_bars = 128;
+    size_t cava_bars = 64;
     const char *bit_format = "16bit";
     size_t ring_capacity = 16; // 环形缓冲区容量
     // 状态管理
@@ -263,24 +263,47 @@ void draw_frame(ClientState *state) {
     glClear(GL_COLOR_BUFFER_BIT);
 
     int ret = cava_reader_try_pop(state->cava_frame.data(), state->cava_frame.size());
-    if (ret == 1) {
+    if (ret >= 0) {
         size_t n = state->cava_frame.size();
         if (n < 2) return;
+
+        // TODO: Catmull–Rom 样条平滑 64 bars -> >= 256 points
         std::vector<GLfloat> vertices;
-        vertices.reserve(n * 2);
+        vertices.reserve(n * 4);
+
         for (size_t i = 0; i < n; i++) {
             float x = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
             float y = state->cava_frame[i] * 2.0f - 1.0f;
             vertices.push_back(x);
-            vertices.push_back(y);
+            vertices.push_back(-1.0f); // 底部点
+            vertices.push_back(x);
+            vertices.push_back(y);     // 波形点
         }
+
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(2, GL_FLOAT, 0, vertices.data());
-        glColor4f(0.0f, 0.4f, 1.0f, 1.0f);
-        glLineWidth(2.0f);
-        glDrawArrays(GL_LINE_STRIP, 0, n);
+
+        // 填充区域
+        // TODO: 使用着色器实现梯度渐变
+        glColor4f(0.0f, 0.4f, 1.0f, 0.4f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, n * 2);
+
+        // 绘制波形轮廓
+        // glColor4f(0.0f, 0.6f, 1.0f, 1.0f);
+        // std::vector<GLfloat> line_vertices;
+        // line_vertices.reserve(n * 2);
+        // for (size_t i = 0; i < n; i++) {
+        //     float x = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
+        //     float y = state->cava_frame[i] * 2.0f - 1.0f;
+        //     line_vertices.push_back(x);
+        //     line_vertices.push_back(y);
+        // }
+        // glVertexPointer(2, GL_FLOAT, 0, line_vertices.data());
+        // glDrawArrays(GL_LINE_STRIP, 0, n);
+
         glDisableClientState(GL_VERTEX_ARRAY);
     }
+
 
     glFinish();
 
