@@ -50,12 +50,17 @@ static int create_temp_config(const char *bit_format, size_t bars, char *out_pat
     // compose config similar to Rust code
     std::string config = "[general]\n";
     config += "bars = " + std::to_string(bars) + "\n";
+    config += "framerate = 65\n";
+    config += "autosens = 1\n";
     config += "[output]\n";
     config += "method = raw\n";
     config += "raw_target = /dev/stdout\n";
     config += "bit_format = ";
     config += bit_format;
     config += "\n";
+    config += "[smothing]\n";
+    config += "monstercat = 1\n";
+    config += "noise_reduction = 77\n";
 
     ssize_t w = write(fd, config.c_str(), config.size());
     (void)w;

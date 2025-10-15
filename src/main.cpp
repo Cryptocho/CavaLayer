@@ -267,29 +267,74 @@ void draw_frame(ClientState *state) {
         size_t n = state->cava_frame.size();
         if (n < 2) return;
 
-        // TODO: Catmull–Rom 样条平滑 64 bars -> >= 256 points
+        // Cardinal spline
+        const float tension = 0.5f;
+        const size_t points_per_segment = 64;
         std::vector<GLfloat> vertices;
-        vertices.reserve(n * 4);
+        std::vector<float> control_points(n);
 
+        std::vector<float> x_coords(n);
         for (size_t i = 0; i < n; i++) {
-            float x = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
-            float y = state->cava_frame[i] * 2.0f - 1.0f;
-            vertices.push_back(x);
-            vertices.push_back(-1.0f); // 底部点
-            vertices.push_back(x);
-            vertices.push_back(y);     // 波形点
+            x_coords[i] = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
+            control_points[i] = state->cava_frame[i] * 1.9f - 0.9f;
         }
+
+        std::vector<float> tangents(n);
+        for (size_t i = 0; i < n - 1; i++) {
+            if (i == 0) {
+                tangents[i] = (1.0f - tension) / 2.0f * (control_points[1] - control_points[0]);
+            } else if (i == n - 1) {
+                tangents[i] = (1.0f - tension) / 2.0f * (control_points[n - 1] - control_points[n - 2]);
+            } else {
+                tangents[i] = (1.0f - tension) / 2.0f * (control_points[i + 1] - control_points[i - 1]);
+            }
+        }
+
+        vertices.reserve((n + (n - 1) * points_per_segment) * 4);
+        for (size_t i = 0; i < n - 1; i++) {
+            float x0 = x_coords[i];
+            float x1 = x_coords[i + 1];
+            float y0 = control_points[i];
+            float y1 = control_points[i + 1];
+            float m0 = tangents[i];
+            float m1 = tangents[i + 1];
+
+            vertices.push_back(x0);
+            vertices.push_back(-1.0f);
+            vertices.push_back(x0);
+            vertices.push_back(y0);
+
+            for (size_t j = 1; j <= points_per_segment; j++) {
+                float u = static_cast<float>(j) / static_cast<float>(points_per_segment + 1);
+                float h0 = 2.0f * u * u * u - 3.0f * u * u + 1.0f;
+                float h1 = -2.0f * u * u * u + 3.0f * u * u;
+                float h2 = u * u * u - 2.0f * u * u + u;
+                float h3 = u * u * u - u * u;
+
+                float x = x0 + u * (x1 - x0);
+                float y = h0 * y0 + h1 * y1 + h2 * m0 + h3 * m1;
+
+                vertices.push_back(x);
+                vertices.push_back(-1.0f);
+                vertices.push_back(x);
+                vertices.push_back(y);
+            }
+        }
+
+        vertices.push_back(x_coords[n - 1]);
+        vertices.push_back(-1.0f);
+        vertices.push_back(x_coords[n - 1]);
+        vertices.push_back(control_points[n - 1]);
 
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(2, GL_FLOAT, 0, vertices.data());
 
-        // 填充区域
         // TODO: 使用着色器实现梯度渐变
         glColor4f(0.0f, 0.4f, 1.0f, 0.4f);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, n * 2);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, vertices.size() / 2);
 
-        // 绘制波形轮廓
-        // glColor4f(0.0f, 0.6f, 1.0f, 1.0f);
+        // [Debug]
+        // glColor4f(1.0f, 0.0f, 1.0f, 1.0f);
         // std::vector<GLfloat> line_vertices;
         // line_vertices.reserve(n * 2);
         // for (size_t i = 0; i < n; i++) {
@@ -299,13 +344,13 @@ void draw_frame(ClientState *state) {
         //     line_vertices.push_back(y);
         // }
         // glVertexPointer(2, GL_FLOAT, 0, line_vertices.data());
-        // glDrawArrays(GL_LINE_STRIP, 0, n);
+        // glPointSize(5.0f);
+        // glDrawArrays(GL_POINTS, 0, n);
 
         glDisableClientState(GL_VERTEX_ARRAY);
     }
 
-
-    glFinish();
+    glFlush();
 
     // 交换缓冲区
     eglSwapBuffers(state->egl_display, state->egl_surface);
@@ -378,7 +423,7 @@ int main() {
     std::cout << "[Layer-Shell] Created layer surface" << std::endl;
     
     zwlr_layer_surface_v1_set_anchor(state.layer_surface.get(), ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
-    zwlr_layer_surface_v1_set_size(state.layer_surface.get(), 500, 250);
+    zwlr_layer_surface_v1_set_size(state.layer_surface.get(), 480, 220);
     zwlr_layer_surface_v1_set_margin(state.layer_surface.get(), 0, 0, 15, 15);
     zwlr_layer_surface_v1_set_keyboard_interactivity(state.layer_surface.get(), ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
     zwlr_layer_surface_v1_add_listener(state.layer_surface.get(), &layer_surface_listener, &state);
