@@ -10,9 +10,12 @@ const char *vertex_shader_source = R"(
 const char *fragment_shader_source = R"(
     #version 320 es
     precision highp float;
-    uniform vec4 color;
+    uniform vec4 colorTop;
+    uniform vec4 colorBottom;
+    uniform float screenHeight;
     out vec4 fragColor;
     void main() {
-        fragColor = color;
+        float t = gl_FragCoord.y / screenHeight;
+        fragColor = mix(colorBottom, colorTop, t);
     }
 )";

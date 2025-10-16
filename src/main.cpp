@@ -49,7 +49,8 @@ struct ClientState {
     GLuint program = 0;
     GLuint vbo = 0;
     GLuint position_attr = -1;
-    GLuint color_uniform = -1;
+    GLuint colorTop_uniform = -1;
+    GLuint colorBottom_uniform = -1;
     // Cava 资源
     std::vector<float> cava_frame;
     size_t cava_bars = 64;
@@ -227,7 +228,8 @@ bool create_shader_program(ClientState *state) {
     }
     
     state->position_attr = glGetAttribLocation(state->program, "position");
-    state->color_uniform = glGetUniformLocation(state->program, "color");
+    state->colorTop_uniform = glGetUniformLocation(state->program, "colorTop");
+    state->colorBottom_uniform = glGetUniformLocation(state->program, "colorBottom");
     
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
@@ -349,7 +351,7 @@ void draw_frame(ClientState *state) {
 
         // Cardinal spline
         const float tension = 0.5f;
-        const size_t points_per_segment = 64;
+        const size_t points_per_segment = 128;
         std::vector<GLfloat> vertices;
         std::vector<float> control_points(n);
 
@@ -406,9 +408,12 @@ void draw_frame(ClientState *state) {
         vertices.push_back(x_coords[n - 1]);
         vertices.push_back(control_points[n - 1]);
 
+        // TODO: 设置更复杂的颜色渐变
         glUseProgram(state->program);
-        // TODO: 梯度渐变颜色
-        glUniform4f(state->color_uniform, 0.0f, 0.4f, 1.0f, 0.4f);
+        GLint screenHeight_uniform = glGetUniformLocation(state->program, "screenHeight");
+        glUniform4f(state->colorTop_uniform, 0.0f, 0.4f, 1.0f, 0.4f);
+        glUniform4f(state->colorBottom_uniform, 0.0f, 1.0f, 0.4f, 0.4f);
+        glUniform1f(screenHeight_uniform, static_cast<float>(state->height));
         glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
         glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(state->position_attr);
@@ -533,7 +538,6 @@ int main() {
         wl_display_dispatch_pending(state.display.get());
         wl_display_flush(state.display.get());
         draw_frame(&state);
-        usleep(16000); // 60 FPS
     }
 
     // 清理资源
