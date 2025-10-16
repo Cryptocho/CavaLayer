@@ -11,7 +11,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WLCLIENT REQUIRED wayland-client)
 pkg_check_modules(WLEGL REQUIRED wayland-egl)
 pkg_check_modules(EGL REQUIRED egl)
-pkg_check_modules(GL REQUIRED gl)
+pkg_check_modules(GLES REQUIRED glesv2)
 
 include_directories(
     include 
@@ -27,7 +27,7 @@ link_libraries(
     ${WLCLIENT_LIBRARIES}
     ${WLEGL_LIBRARIES}
     ${EGL_LIBRARIES}
-    ${GL_LIBRARIES}
+    ${GLES_LIBRARIES}
 )
 
 file(GLOB_RECURSE SOURCES

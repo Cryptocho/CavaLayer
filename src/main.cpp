@@ -8,12 +8,14 @@
 #include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GL/gl.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 
 #define namespace ns
 #include "layer-shell-client-protocol.h"
 #undef namespace
 #include "cava-input.hpp"
+#include "shaders.hpp"
 
 // RAII包装
 struct WlDeleter {
@@ -44,6 +46,10 @@ struct ClientState {
     EGLDisplay egl_display = EGL_NO_DISPLAY;
     EGLContext egl_context = EGL_NO_CONTEXT;
     EGLSurface egl_surface = EGL_NO_SURFACE;
+    GLuint program = 0;
+    GLuint vbo = 0;
+    GLuint position_attr = -1;
+    GLuint color_uniform = -1;
     // Cava 资源
     std::vector<float> cava_frame;
     size_t cava_bars = 64;
@@ -178,6 +184,57 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
     .closed = layer_surface_closed,
 };
 
+GLuint compile_shader(GLenum type, const char *source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    GLint compiled;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        GLint log_len;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
+        std::vector<GLchar> log(log_len);
+        glGetShaderInfoLog(shader, log_len, nullptr, log.data());
+        std::cerr << "Failed to compile shader: " << log.data() << std::endl;
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
+}
+
+bool create_shader_program(ClientState *state) {
+    GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_shader_source);
+    GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
+    
+    if (!vertex_shader || !fragment_shader) {
+        return false;
+    }
+    
+    state->program = glCreateProgram();
+    glAttachShader(state->program, vertex_shader);
+    glAttachShader(state->program, fragment_shader);
+    glLinkProgram(state->program);
+    
+    GLint success;
+    glGetProgramiv(state->program, GL_LINK_STATUS, &success);
+    if (!success) {
+        GLchar info_log[512];
+        glGetProgramInfoLog(state->program, 512, nullptr, info_log);
+        std::cerr << "Shader program linking error: " << info_log << std::endl;
+        return false;
+    }
+    
+    state->position_attr = glGetAttribLocation(state->program, "position");
+    state->color_uniform = glGetUniformLocation(state->program, "color");
+    
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+    
+    return true;
+}
+
 bool init_egl(ClientState *state) {
     state->egl_display = eglGetDisplay(state->display.get());
     if (state->egl_display == EGL_NO_DISPLAY) {
@@ -192,11 +249,11 @@ bool init_egl(ClientState *state) {
     }
     std::cout << "[EGL] Initialized EGL " << major << "." << minor << std::endl;
     
-    eglBindAPI(EGL_OPENGL_API);
+    eglBindAPI(EGL_OPENGL_ES_API);
 
     EGLint config_attribs[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8,
@@ -223,7 +280,11 @@ bool init_egl(ClientState *state) {
     }
     std::cout << "[EGL] Created EGL surface" << std::endl;
 
-    EGLint context_attribs[] = { EGL_NONE };
+    EGLint context_attribs[] = { 
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 2,
+        EGL_NONE
+    };
     state->egl_context = eglCreateContext(state->egl_display, config, EGL_NO_CONTEXT, context_attribs);
     if (state->egl_context == EGL_NO_CONTEXT) {
         std::cerr << "Failed to create EGL context: " << eglGetError() << std::endl;
@@ -241,6 +302,25 @@ bool init_egl(ClientState *state) {
         return false;
     }
     std::cout << "[EGL] Made EGL context current successfully" << std::endl;
+
+    if (!create_shader_program(state)) {
+        std::cerr << "Failed to create shader program" << std::endl;
+        return false;
+    }
+    glGenBuffers(1, &state->vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
+    glEnableVertexAttribArray(state->position_attr);
+    glVertexAttribPointer(state->position_attr, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    EGLint swap_interval = 1;
+    if (!eglSwapInterval(state->egl_display, swap_interval)) {
+        std::cerr << "Failed to set swap interval: " << eglGetError() << std::endl;
+        return false;
+    }
+    std::cout << "[EGL] Set swap interval to " << swap_interval << std::endl;
+
+    const GLubyte* version = glGetString(GL_VERSION);
+    std::cout << "[EGL] Running on GLES " << version << std::endl;
 
     state->egl_initialized = true;
     std::cout << "[EGL] Initialization complete" << std::endl;
@@ -276,7 +356,7 @@ void draw_frame(ClientState *state) {
         std::vector<float> x_coords(n);
         for (size_t i = 0; i < n; i++) {
             x_coords[i] = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
-            control_points[i] = state->cava_frame[i] * 1.9f - 0.9f;
+            control_points[i] = state->cava_frame[i] * 2.0f - 1.0f;
         }
 
         std::vector<float> tangents(n);
@@ -326,28 +406,17 @@ void draw_frame(ClientState *state) {
         vertices.push_back(x_coords[n - 1]);
         vertices.push_back(control_points[n - 1]);
 
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glVertexPointer(2, GL_FLOAT, 0, vertices.data());
-
-        // TODO: 使用着色器实现梯度渐变
-        glColor4f(0.0f, 0.4f, 1.0f, 0.4f);
+        glUseProgram(state->program);
+        // TODO: 梯度渐变颜色
+        glUniform4f(state->color_uniform, 0.0f, 0.4f, 1.0f, 0.4f);
+        glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(state->position_attr);
+        glVertexAttribPointer(state->position_attr, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, vertices.size() / 2);
-
-        // [Debug]
-        // glColor4f(1.0f, 0.0f, 1.0f, 1.0f);
-        // std::vector<GLfloat> line_vertices;
-        // line_vertices.reserve(n * 2);
-        // for (size_t i = 0; i < n; i++) {
-        //     float x = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(n - 1);
-        //     float y = state->cava_frame[i] * 2.0f - 1.0f;
-        //     line_vertices.push_back(x);
-        //     line_vertices.push_back(y);
-        // }
-        // glVertexPointer(2, GL_FLOAT, 0, line_vertices.data());
-        // glPointSize(5.0f);
-        // glDrawArrays(GL_POINTS, 0, n);
-
-        glDisableClientState(GL_VERTEX_ARRAY);
+        glDisableVertexAttribArray(state->position_attr);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glUseProgram(0);
     }
 
     glFlush();
@@ -359,6 +428,14 @@ void draw_frame(ClientState *state) {
 }
 
 void cleanup_egl(ClientState *state) {
+    if (state->vbo) {
+        glDeleteBuffers(1, &state->vbo);
+        state->vbo = 0;
+    }
+    if (state->program) {
+        glDeleteProgram(state->program);
+        state->program = 0;
+    }
     if (state->egl_display != EGL_NO_DISPLAY) {
         eglMakeCurrent(state->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         
@@ -460,8 +537,8 @@ int main() {
     }
 
     // 清理资源
-    cleanup_egl(&state);
     cava_reader_stop();
+    cleanup_egl(&state);
     std::cout << "[CAVA] Reader stopped" << std::endl;
 
     return 0;
